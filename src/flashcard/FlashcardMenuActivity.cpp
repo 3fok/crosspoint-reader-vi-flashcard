@@ -13,6 +13,7 @@
 
 #include "activities/ActivityManager.h"
 #include "CrossPointSettings.h"
+#include "CrossPointState.h"
 #include "FlashcardPrefs.h"
 #include "FlashcardStore.h"
 #include "FlashcardStudyActivity.h"

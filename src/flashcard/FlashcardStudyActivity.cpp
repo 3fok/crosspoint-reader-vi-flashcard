@@ -2,6 +2,9 @@
 
 #include <esp_random.h>
 
+#include <algorithm>
+#include <sstream>
+
 #include <GfxRenderer.h>
 #include <I18n.h>
 
@@ -27,24 +30,121 @@ std::string formatNotesReading(const FlashcardCard& c) {
   return out;
 }
 
-int pickFrontFont(const GfxRenderer& r, const char* text, int maxW) {
-  const int ids[] = {NOTOSANS_18_FONT_ID, NOTOSANS_16_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID};
-  for (const int id : ids) {
-    if (r.getTextWidth(id, text, EpdFontFamily::BOLD) <= maxW) {
-      return id;
-    }
+struct BlockLayout {
+  int fontId = NOTOSANS_12_FONT_ID;
+  int lineHeight = 0;
+  EpdFontFamily::Style style = EpdFontFamily::REGULAR;
+  std::vector<std::string> lines;
+  int height = 0;
+};
+
+std::vector<std::string> splitUtf8Chars(const std::string& s) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    size_t len = 1;
+    if ((c & 0x80) == 0) len = 1;
+    else if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    if (i + len > s.size()) len = 1;
+    out.emplace_back(s.substr(i, len));
+    i += len;
   }
-  return NOTOSANS_12_FONT_ID;
+  return out;
 }
 
-void drawCenteredLines(const GfxRenderer& r, int fontId, int left, int width, int topY, const std::vector<std::string>& lines,
-                       EpdFontFamily::Style style, int lineSkip) {
+std::vector<std::string> wrapWithHyphenation(const GfxRenderer& r, int fontId, const std::string& text, int maxWidth,
+                                             EpdFontFamily::Style style, int maxLines) {
+  std::vector<std::string> lines;
+  std::istringstream iss(text);
+  std::string word;
+  std::string line;
+
+  auto pushLine = [&]() {
+    if (!line.empty()) {
+      lines.push_back(line);
+      line.clear();
+    }
+  };
+
+  auto fits = [&](const std::string& s) {
+    return r.getTextWidth(fontId, s.c_str(), style) <= maxWidth;
+  };
+
+  while (iss >> word) {
+    const std::string candidate = line.empty() ? word : line + ' ' + word;
+    if (fits(candidate)) {
+      line = candidate;
+      continue;
+    }
+
+    pushLine();
+    if (static_cast<int>(lines.size()) >= maxLines) {
+      break;
+    }
+
+    if (fits(word)) {
+      line = word;
+      continue;
+    }
+
+    std::string part;
+    for (const auto& ch : splitUtf8Chars(word)) {
+      const std::string trial = part + ch;
+      if (fits(trial + '-')) {
+        part = trial;
+        continue;
+      }
+      if (!part.empty()) {
+        lines.push_back(part + '-');
+        part = ch;
+        if (static_cast<int>(lines.size()) >= maxLines) {
+          break;
+        }
+      } else {
+        part = ch;
+      }
+    }
+    if (static_cast<int>(lines.size()) >= maxLines) {
+      break;
+    }
+    line = part;
+  }
+
+  if (!line.empty() && static_cast<int>(lines.size()) < maxLines) {
+    lines.push_back(line);
+  }
+  return lines;
+}
+
+BlockLayout fitBlock(const GfxRenderer& r, const std::string& text, int maxWidth, int maxHeight, EpdFontFamily::Style style,
+                     const int* fonts, size_t fontCount, int maxLines) {
+  BlockLayout best;
+  for (size_t i = 0; i < fontCount; i++) {
+    const int fontId = fonts[i];
+    const int lineHeight = r.getLineHeight(fontId);
+    const auto lines = wrapWithHyphenation(r, fontId, text, maxWidth, style, maxLines);
+    const int height = static_cast<int>(lines.size()) * lineHeight;
+    if (height <= maxHeight || i == fontCount - 1) {
+      best.fontId = fontId;
+      best.lineHeight = lineHeight;
+      best.style = style;
+      best.lines = lines;
+      best.height = height;
+      return best;
+    }
+  }
+  return best;
+}
+
+void drawCenteredBlock(const GfxRenderer& r, const BlockLayout& block, int left, int width, int topY) {
   int y = topY;
-  for (const auto& ln : lines) {
-    const int tw = r.getTextWidth(fontId, ln.c_str(), style);
+  for (const auto& ln : block.lines) {
+    const int tw = r.getTextWidth(block.fontId, ln.c_str(), block.style);
     const int x = left + (width - tw) / 2;
-    r.drawText(fontId, x, y, ln.c_str(), true, style);
-    y += lineSkip;
+    r.drawText(block.fontId, x, y, ln.c_str(), true, block.style);
+    y += block.lineHeight;
   }
 }
 
@@ -69,7 +169,6 @@ void FlashcardStudyActivity::onEnter() {
   Activity::onEnter();
   (void)flashcard::loadShowControls(showControls);
   flipped = false;
-  history.clear();
   cardLoaded = false;
   const uint32_t n = flashcard::getCardCount();
   if (n == 0) {
@@ -82,103 +181,99 @@ void FlashcardStudyActivity::onEnter() {
   requestUpdate();
 }
 
-void FlashcardStudyActivity::onExit() {
-  clearStudyState();
-  Activity::onExit();
-}
+void FlashcardStudyActivity::onExit() { Activity::onExit(); }
 
-void FlashcardStudyActivity::pickRandomCard(bool pushCurrentToHistory) {
+void FlashcardStudyActivity::pickRandomCard() {
   const uint32_t n = flashcard::getCardCount();
   if (n == 0) {
     cardLoaded = false;
     return;
   }
-  if (pushCurrentToHistory && cardLoaded) {
-    history.push_back(currentIndex);
-  }
-  currentIndex = static_cast<uint32_t>(esp_random() % static_cast<uint32_t>(n));
+  const uint32_t prevIndex = currentIndex;
+  do {
+    currentIndex = static_cast<uint32_t>(esp_random() % static_cast<uint32_t>(n));
+  } while (n > 1 && currentIndex == prevIndex);
   cardLoaded = flashcard::readCard(currentIndex, card);
   flipped = false;
 }
 
 void FlashcardStudyActivity::flipCard() { flipped = !flipped; }
 
-void FlashcardStudyActivity::historyBack() {
-  if (history.empty()) {
-    return;
-  }
-  currentIndex = history.back();
-  history.pop_back();
-  cardLoaded = flashcard::readCard(currentIndex, card);
-  flipped = false;
-}
-
 void FlashcardStudyActivity::exitStudy() {
-  if (activityManager.canPopActivity()) {
-    activityManager.popActivity();
-  } else {
-    activityManager.goHome();
-  }
+  clearStudyState();
+  activityManager.goToFlashcardMenu();
 }
 
 void FlashcardStudyActivity::drawStudyContent(const int contentTop, const int contentBottom, const int contentLeft,
                                               const int contentWidth) const {
-  const int lh14 = renderer.getLineHeight(NOTOSANS_14_FONT_ID);
+  constexpr int kGap = 6;
+  constexpr int kDividerHeight = 3;
+  constexpr int kMaxFrontLines = 4;
+  constexpr int kMaxNotesLines = 4;
+  constexpr int kMaxBackLines = 4;
+  constexpr int kMaxExampleLines = 999;
 
-  // Fixed slot heights (stable layout when flipping).
-  constexpr int kFrontSlot = 80;
-  constexpr int kNotesSlot = 44;
-  constexpr int kDividerSlot = 28;
-  constexpr int kBackSlot = 72;
-  constexpr int kExampleSlot = 120;
-  const int blockH = kFrontSlot + kNotesSlot + kDividerSlot + kBackSlot + kExampleSlot;
-  const int availH = contentBottom - contentTop;
-  int y = contentTop;
-  if (availH > blockH) {
-    y += (availH - blockH) / 2;
+  const int availableH = contentBottom - contentTop;
+  const int textWidth = contentWidth - 8;
+
+  const int frontFonts[] = {NOTOSANS_18_FONT_ID, NOTOSANS_16_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID};
+  const int notesFonts[] = {DOULOSSIL_12_FONT_ID, NOTOSANS_12_FONT_ID};
+  const int bodyFonts[] = {NOTOSANS_16_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_12_FONT_ID};
+  const int exampleFonts[] = {NOTOSANS_12_FONT_ID, NOTOSANS_14_FONT_ID, NOTOSANS_16_FONT_ID};
+
+  auto fitFront = [&](const std::string& text, int maxH) {
+    for (size_t i = 0; i < sizeof(frontFonts) / sizeof(frontFonts[0]); i++) {
+      const int fontId = frontFonts[i];
+      const int lh = renderer.getLineHeight(fontId);
+      const int maxLines = std::max(1, maxH / lh);
+      const auto lines = wrapWithHyphenation(renderer, fontId, text, textWidth, EpdFontFamily::BOLD, std::min(maxLines, kMaxFrontLines));
+      if (static_cast<int>(lines.size()) * lh <= maxH || i == (sizeof(frontFonts) / sizeof(frontFonts[0])) - 1) {
+        return BlockLayout{fontId, lh, EpdFontFamily::BOLD, lines, static_cast<int>(lines.size()) * lh};
+      }
+    }
+    return BlockLayout{};
+  };
+
+  auto fitRegular = [&](const std::string& text, int maxH, const int* fonts, size_t fontCount, int maxLines, EpdFontFamily::Style style) {
+    for (size_t i = 0; i < fontCount; i++) {
+      const int fontId = fonts[i];
+      const int lh = renderer.getLineHeight(fontId);
+      const auto lines = wrapWithHyphenation(renderer, fontId, text, textWidth, style, std::min(maxLines, std::max(1, maxH / lh)));
+      if (static_cast<int>(lines.size()) * lh <= maxH || i == fontCount - 1) {
+        return BlockLayout{fontId, lh, style, lines, static_cast<int>(lines.size()) * lh};
+      }
+    }
+    return BlockLayout{};
+  };
+
+  // Reserve space for back/example and compute a centered layout dynamically.
+  auto front = fitFront(card.front, availableH / 3);
+  auto notes = fitRegular(formatNotesReading(card), availableH / 4, notesFonts, sizeof(notesFonts) / sizeof(notesFonts[0]), kMaxNotesLines, EpdFontFamily::REGULAR);
+  auto back = flipped ? fitRegular(card.back, availableH / 4, bodyFonts, sizeof(bodyFonts) / sizeof(bodyFonts[0]), kMaxBackLines, EpdFontFamily::BOLD) : BlockLayout{};
+  auto example = flipped ? fitRegular(card.example, availableH - 2 * kGap, exampleFonts, sizeof(exampleFonts) / sizeof(exampleFonts[0]), kMaxExampleLines, EpdFontFamily::REGULAR) : BlockLayout{};
+
+  int blockH = front.height + kGap + notes.height;
+  if (flipped) {
+    blockH += kGap + kDividerHeight + kGap + back.height + kGap + example.height;
+  }
+  const int startY = contentTop + std::max(0, (availableH - blockH) / 2);
+  int y = startY;
+
+  drawCenteredBlock(renderer, front, contentLeft, contentWidth, y);
+  y += front.height + kGap;
+  drawCenteredBlock(renderer, notes, contentLeft, contentWidth, y);
+  y += notes.height;
+  if (flipped) {
+    y += kGap;
+    renderer.drawLine(contentLeft + 8, y + kDividerHeight / 2, contentLeft + contentWidth - 8, y + kDividerHeight / 2, kDividerHeight, true);
+    y += kDividerHeight + kGap;
   }
 
-  const int frontFont = pickFrontFont(renderer, card.front.c_str(), contentWidth - 8);
-  const int frontLh = renderer.getLineHeight(frontFont);
-  const std::string frontDraw =
-      renderer.truncatedText(frontFont, card.front.c_str(), contentWidth - 8, EpdFontFamily::BOLD);
-  const int fy = y + (kFrontSlot - frontLh) / 2;
-  const int frontTw = renderer.getTextWidth(frontFont, frontDraw.c_str(), EpdFontFamily::BOLD);
-  const int frontX = contentLeft + (contentWidth - frontTw) / 2;
-  renderer.drawText(frontFont, frontX, fy, frontDraw.c_str(), true, EpdFontFamily::BOLD);
-
-  y += kFrontSlot;
-  const std::string nr = formatNotesReading(card);
-  const auto nrLines = renderer.wrappedText(NOTOSANS_14_FONT_ID, nr.c_str(), contentWidth - 8, 2, EpdFontFamily::REGULAR);
-  drawCenteredLines(renderer, NOTOSANS_14_FONT_ID, contentLeft, contentWidth, y + (kNotesSlot - static_cast<int>(nrLines.size()) * lh14) / 2,
-                    nrLines, EpdFontFamily::REGULAR, lh14);
-
-  y += kNotesSlot;
-  const int lineY = y + kDividerSlot / 2;
-  renderer.drawLine(contentLeft + 8, lineY, contentLeft + contentWidth - 8, lineY, 2, true);
-  y += kDividerSlot;
-
-  const std::string backText = flipped ? card.back : std::string();
-  const std::string exText = flipped ? card.example : std::string();
-
-  const int backFont = NOTOSANS_16_FONT_ID;
-  const auto backLines =
-      backText.empty() ? std::vector<std::string>{}
-                       : renderer.wrappedText(backFont, backText.c_str(), contentWidth - 8, 3, EpdFontFamily::REGULAR);
-  const int backLh = renderer.getLineHeight(backFont);
-  const int backBlockH = static_cast<int>(backLines.empty() ? backLh : backLines.size() * backLh);
-  drawCenteredLines(renderer, backFont, contentLeft, contentWidth, y + (kBackSlot - backBlockH) / 2, backLines, EpdFontFamily::REGULAR,
-                    backLh);
-  y += kBackSlot;
-
-  const int exFont = NOTOSANS_12_FONT_ID;
-  const auto exLines =
-      exText.empty() ? std::vector<std::string>{}
-                     : renderer.wrappedText(exFont, exText.c_str(), contentWidth - 8, 6, EpdFontFamily::REGULAR);
-  const int exLh = renderer.getLineHeight(exFont);
-  const int exBlockH = static_cast<int>(exLines.empty() ? exLh : exLines.size() * exLh);
-  drawCenteredLines(renderer, exFont, contentLeft, contentWidth, y + (kExampleSlot - exBlockH) / 2, exLines, EpdFontFamily::REGULAR, exLh);
-
+  if (flipped) {
+    drawCenteredBlock(renderer, back, contentLeft, contentWidth, y);
+    y += back.height + kGap;
+    drawCenteredBlock(renderer, example, contentLeft, contentWidth, y);
+  }
 }
 
 void FlashcardStudyActivity::loop() {
@@ -195,7 +290,7 @@ void FlashcardStudyActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Right)) {
-    pickRandomCard(true);
+    pickRandomCard();
     requestUpdate();
     return;
   }
@@ -205,7 +300,7 @@ void FlashcardStudyActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    pickRandomCard(true);
+    pickRandomCard();
     requestUpdate();
     return;
   }

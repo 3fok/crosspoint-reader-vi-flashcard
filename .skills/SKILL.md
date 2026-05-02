@@ -140,6 +140,7 @@ Chỉ còn 1 setting:
 4. Back (Nghĩa)
    - Text: `hợp đồng`
    - Căn giữa
+   - Bold
    - Font: 28–36px
 
 5. Example

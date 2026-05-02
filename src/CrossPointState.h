@@ -14,6 +14,7 @@ class CrossPointState {
   uint8_t lastSleepImage = UINT8_MAX;  // UINT8_MAX = unset sentinel
   uint8_t readerActivityLoadCount = 0;
   bool lastSleepFromReader = false;
+  bool lastSleepFromFlashcard = false;
   LastScreen lastScreen = LastScreen::None;
   /// When lastScreen == Flashcard, must match the deck stored in flashcard_deck.bin for resume.
   std::string flashcardDeckName;

@@ -72,6 +72,7 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepImage"] = s.lastSleepImage;
   doc["readerActivityLoadCount"] = s.readerActivityLoadCount;
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
+  doc["lastSleepFromFlashcard"] = s.lastSleepFromFlashcard;
   const char* screenKey = "none";
   if (s.lastScreen == CrossPointState::LastScreen::Reader) {
     screenKey = "reader";
@@ -98,6 +99,7 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.lastSleepImage = doc["lastSleepImage"] | (uint8_t)UINT8_MAX;
   s.readerActivityLoadCount = doc["readerActivityLoadCount"] | (uint8_t)0;
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
+  s.lastSleepFromFlashcard = doc["lastSleepFromFlashcard"] | false;
   const std::string lastScreenStr = doc["lastScreen"] | std::string("");
   if (lastScreenStr == "reader") {
     s.lastScreen = CrossPointState::LastScreen::Reader;

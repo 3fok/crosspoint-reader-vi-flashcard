@@ -125,6 +125,9 @@ EpdFont ui12RegularFont(&ubuntu_12_regular);
 EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
+EpdFont doulossil12RegularFont(&doulossil_12_regular);
+EpdFontFamily doulossil12FontFamily(&doulossil12RegularFont);
+
 // measurement of power button press duration calibration value
 unsigned long t1 = 0;
 unsigned long t2 = 0;
@@ -185,6 +188,7 @@ void waitForPowerRelease() {
 void enterDeepSleep() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
+  APP_STATE.lastSleepFromFlashcard = APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard;
   APP_STATE.saveToFile();
 
   activityManager.goToSleep();
@@ -226,6 +230,7 @@ void setupDisplayAndFonts() {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
+  renderer.insertFont(DOULOSSIL_12_FONT_ID, doulossil12FontFamily);
   LOG_DBG("MAIN", "Fonts setup");
 }
 
@@ -282,9 +287,6 @@ void setup() {
       break;
   }
 
-  // First serial output only here to avoid timing inconsistencies for power button press duration verification
-  LOG_DBG("MAIN", "Starting CrossPoint version " CROSSPOINT_VERSION);
-
   setupDisplayAndFonts();
 
   activityManager.goToBoot();
@@ -292,23 +294,27 @@ void setup() {
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
 
+  const bool resumeReader = !APP_STATE.openEpubPath.empty() && APP_STATE.lastSleepFromReader &&
+                            !mappedInputManager.isPressed(MappedInputManager::Button::Back) &&
+                            APP_STATE.readerActivityLoadCount == 0;
   const bool resumeFlashcard =
-      APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard && flashcard::hasDeck() &&
-      flashcard::getCardCount() > 0 && !APP_STATE.flashcardDeckName.empty() &&
+      !resumeReader && APP_STATE.lastSleepFromFlashcard && APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard &&
+      flashcard::hasDeck() && flashcard::getCardCount() > 0 && !APP_STATE.flashcardDeckName.empty() &&
       flashcard::getDeckName() == APP_STATE.flashcardDeckName;
 
-  if (resumeFlashcard) {
-    activityManager.goToFlashcardStudy();
-  } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-             mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
-    activityManager.goHome();
-  } else {
+  if (resumeReader) {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
     const auto path = APP_STATE.openEpubPath;
     APP_STATE.openEpubPath = "";
     APP_STATE.readerActivityLoadCount++;
     APP_STATE.saveToFile();
     activityManager.goToReader(path);
+  } else if (resumeFlashcard) {
+    APP_STATE.lastSleepFromFlashcard = false;
+    APP_STATE.saveToFile();
+    activityManager.goToFlashcardStudy();
+  } else {
+    activityManager.goHome();
   }
 
   // Ensure we're not still holding the power button before leaving setup

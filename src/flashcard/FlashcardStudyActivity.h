@@ -21,14 +21,12 @@ class FlashcardStudyActivity final : public Activity {
   bool flipped = false;
   uint32_t currentIndex = 0;
   FlashcardCard card;
-  std::vector<uint32_t> history;
   bool cardLoaded = false;
 
   void persistStudyState();
   void clearStudyState();
-  void pickRandomCard(bool pushCurrentToHistory);
+  void pickRandomCard();
   void flipCard();
-  void historyBack();
   void exitStudy();
   void drawStudyContent(int contentTop, int contentBottom, int contentLeft, int contentWidth) const;
 };

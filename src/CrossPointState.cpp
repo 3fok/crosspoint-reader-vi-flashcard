@@ -76,6 +76,12 @@ bool CrossPointState::loadFromBinaryFile() {
     lastSleepFromReader = false;
   }
 
+  if (version >= 5) {
+    serialization::readPod(inputFile, lastSleepFromFlashcard);
+  } else {
+    lastSleepFromFlashcard = false;
+  }
+
   inputFile.close();
   return true;
 }
