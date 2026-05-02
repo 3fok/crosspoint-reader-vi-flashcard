@@ -115,9 +115,9 @@ void FlashcardStudyActivity::historyBack() {
 
 void FlashcardStudyActivity::exitStudy() {
   if (activityManager.canPopActivity()) {
-    finish();
+    activityManager.popActivity();
   } else {
-    activityManager.goToFlashcardMenu();
+    activityManager.goHome();
   }
 }
 
@@ -182,18 +182,15 @@ void FlashcardStudyActivity::drawStudyContent(const int contentTop, const int co
 }
 
 void FlashcardStudyActivity::loop() {
-  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
-    flipCard();
-    requestUpdate();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    exitStudy();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
-    pickRandomCard(true);
-    requestUpdate();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Left)) {
-    historyBack();
+    flipCard();
     requestUpdate();
     return;
   }
@@ -202,13 +199,14 @@ void FlashcardStudyActivity::loop() {
     requestUpdate();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+  if (mappedInput.wasReleased(MappedInputManager::Button::Up)) {
     flipCard();
     requestUpdate();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    exitStudy();
+  if (mappedInput.wasReleased(MappedInputManager::Button::Down)) {
+    pickRandomCard(true);
+    requestUpdate();
     return;
   }
 }
@@ -221,11 +219,9 @@ void FlashcardStudyActivity::render(RenderLock&&) {
   renderer.getOrientedViewableTRBL(&mt, &mr, &mb, &ml);
 
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageW, metrics.headerHeight}, tr(STR_FLASHCARD));
 
-  constexpr int kControlBar = 52;
-  const int bottomReserve = showControls ? (kControlBar + metrics.buttonHintsHeight) : metrics.buttonHintsHeight;
-  const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
+  const int bottomReserve = showControls ? metrics.buttonHintsHeight : 0;
+  const int contentTop = metrics.topPadding;
   const int contentBottom = pageH - mb - bottomReserve;
   const int contentLeft = ml + metrics.contentSidePadding;
   const int contentWidth = pageW - ml - mr - 2 * metrics.contentSidePadding;
@@ -237,21 +233,9 @@ void FlashcardStudyActivity::render(RenderLock&&) {
   }
 
   if (showControls) {
-    const int barY = pageH - mb - metrics.buttonHintsHeight - kControlBar;
-    renderer.drawLine(contentLeft, barY, contentLeft + contentWidth, barY, 1, true);
-    const int seg = contentWidth / 4;
-    const char* labels[] = {tr(STR_FLASHCARD_BAR_BACK), "Ease", tr(STR_FLASHCARD_FLIP), tr(STR_FLASHCARD_NEXT)};
-    for (int i = 0; i < 4; i++) {
-      const int cx = contentLeft + seg * i + seg / 2;
-      const int tw = renderer.getTextWidth(SMALL_FONT_ID, labels[i]);
-      renderer.drawText(SMALL_FONT_ID, cx - tw / 2, barY + 18, labels[i]);
-    }
+    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", tr(STR_FLASHCARD_FLIP), tr(STR_FLASHCARD_NEXT));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
-
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_FLASHCARD_FLIP), tr(STR_FLASHCARD_PREV_CARD),
-                                              tr(STR_FLASHCARD_NEXT_CARD));
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  GUI.drawSideButtonHints(renderer, tr(STR_FLASHCARD_FLIP), tr(STR_FLASHCARD_NEXT));
 
   renderer.displayBuffer();
 }
