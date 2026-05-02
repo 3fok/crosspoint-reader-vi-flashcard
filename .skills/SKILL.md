@@ -1,263 +1,251 @@
-# CrossPoint Reader Development Guide
+# Flashcard Feature Spec — Xteink X4
 
-Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
-Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
+## 1. Mục tiêu
 
-## AI Agent Identity and Cognitive Rules
-* Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
-* Primary Constraint: 380KB RAM is the hard ceiling. Stability is non-negotiable.
-* Evidence-Based Reasoning: Before proposing a change, you MUST cite the specific file path and line numbers that justify the modification.
-* Anti-Hallucination: Do not assume the existence of libraries or ESP-IDF functions. If you are unsure of an API's availability for the ESP32-C3 RISC-V target, check the open-x4-sdk or official docs first.
-* No Unfounded Claims: Do not claim performance gains or memory savings without explaining the technical mechanism (e.g., DRAM vs IRAM usage).
-* Resource Justification: You must justify any new heap allocation (new, malloc, std::vector) or explain why a stack/static alternative was rejected.
-* Verification: After suggesting a fix, instruct the user on how to verify it (e.g., monitoring heap via Serial or checking a specific cache file).
----
+Xây dựng tính năng Flashcard học từ vựng cho Xteink X4 với tiêu chí:
+- Tối giản, phù hợp e-ink
+- Load nhanh, tiết kiệm RAM
+- UI ổn định, không nhảy layout
+- Hỗ trợ đầy đủ Tiếng Việt và IPA
 
-## Development Environment Awareness
+## 2. Kiến trúc hệ thống
 
-**CRITICAL**: Detect the host platform at session start to choose appropriate tools and commands.
+### 2.1 Module
 
-### Platform Detection
-```bash
-# Detect platform (run once per session)
-uname -s
-# Returns: MINGW64_NT-* (Windows Git Bash), Linux, Darwin (macOS)
-```
+1. Data Layer
+   - Input: file JSON từ SD card
+   - JSON định dạng chuẩn:
+     {
+       "name": "English Vocabulary",
+       "cards": [
+         {
+           "front": "agreement",
+           "back": "hợp đồng",
+           "notes": "(n)",
+           "reading": "əˈgrimənt",
+           "example": "We finally reached an agreement after hours of discussion."
+         },
+         {
+           "front": "misunderstanding",
+           "back": "sự hiểu lầm",
+           "notes": "(n)",
+           "reading": "ˌmɪsʌndərˈstændɪŋ",
+           "example": "The argument was just a misunderstanding between the two friends."
+         }
+       ]
+     }
+   - Database schema:
+     - `id INTEGER PRIMARY KEY`
+     - `deck_name TEXT`
+     - `front TEXT`
+     - `back TEXT`
+     - `notes TEXT`
+     - `reading TEXT`
+     - `example TEXT`
 
-**Detection Required**: Run `uname -s` at session start to determine platform
+2. Flashcard Engine
+   - Chức năng:
+     - Load deck từ database
+     - Random card
+   - Logic:
+     - Random đều (uniform random)
+     - Không có weight
+     - Không có tracking
 
-### Platform-Specific Behaviors
-- **Windows (Git Bash)**: Unix commands, `C:\` paths in Windows but `/` in bash, limited glob (use `find`+`xargs`)
-- **Linux/WSL**: Full bash, Unix paths, native glob support
+3. UI Layer
+   - Chỉ render dữ liệu
+   - Không chứa logic
 
-**Cross-Platform Code Formatting**:
-```bash
-find src -name "*.cpp" -o -name "*.h" | xargs clang-format -i
-```
+## 3. Main Menu: Flashcard
 
----
+### 3.1 Cấu trúc
 
-## Platform and Hardware Constraints
+Flashcard
+ ├── Deck List
+ ├── Create Database
+ └── Settings
 
-### Hardware Specs
-* MCU: ESP32-C3 (Single-core RISC-V @ 160MHz)
-* RAM: ~380KB usable (VERY LIMITED - primary project constraint)
-  * **NO PSRAM**: ESP32-C3 has no PSRAM capability (unlike ESP32-S3)
-  * **Single Buffer Mode**: Only ONE 48KB framebuffer (not double-buffered)
-* Flash: 16MB (Instruction storage and static data)
-* Display: 800x480 E-Ink (Slow refresh, monochrome, 1-2s full update)
-  * Framebuffer: 48,000 bytes (800 × 480 ÷ 8)
-* Storage: SD Card (Used for books and aggressive caching)
+### 3.2 Deck List
 
-### The Resource Protocol
-1. Stack Safety: Limit local function variables to < 256 bytes. The ESP32-C3 default stack is small; use std::unique_ptr or static pools for larger buffers.
-2. Heap Fragmentation: Avoid repeated new/delete in loops. Allocate buffers once during onEnter() and reuse them.
-3. Flash Persistence: Large constant data (UI strings, lookup tables) MUST be marked static const to stay in Flash (Instruction Bus), freeing DRAM.
-4. String Policy: Prohibit std::string and Arduino String in hot paths. Use std::string_view for read-only access and snprintf with fixed char[] buffers for construction.
-5. UI Strings: All user-facing text must use the `tr()` macro (e.g., `tr(STR_LOADING)`) for i18n support. Never hardcode UI strings directly. For the avoidance of doubt, logging messages (LOG_DBG/LOG_ERR) can be hardcoded, but user-facing text must use `tr()`.
-6. `constexpr` First: Compile-time constants and lookup tables must be `constexpr`, not just `static const`. This moves computation to compile time, enables dead-branch elimination, and guarantees flash placement. Use `static constexpr` for class-level constants.
-7. `std::vector` Pre-allocation: Always call `.reserve(N)` before any `push_back()` loop. Each growth event allocates a new block (2×), copies all elements, then frees the old one — three heap operations that fragment DRAM. When the final size is unknown, estimate conservatively.
-8. SPIFFS Write Throttling: Never write a settings file on every user interaction. Guard all writes with a value-change check (`if (newVal == _current) return;`). Progress saves during reading must be debounced — write on activity exit or every N page turns, not on every turn. SPIFFS sectors have a finite erase cycle limit.
+Yêu cầu:
+- Chỉ hiển thị deck từ database
+- Không hiển thị:
+  - JSON file
+  - File config
+  - Database khác
+- Hiển thị:
+  - Tên deck (`name`)
+  - Số lượng card
+- Hành vi:
+  - Chọn deck → vào màn hình học
 
----
+### 3.3 Create Database
 
-## Project Architecture
+Input:
+- Danh sách file `.json`
+- Không hiển thị: `flashcard_settings.json`
 
-### Build System: PlatformIO
+Hành vi khi chọn file:
+1. XÓA database cũ (nếu có)
+2. Parse JSON
+3. Insert toàn bộ cards
+4. Lưu `deck_name = name`
 
-**PlatformIO is BOTH a VS Code extension AND a CLI tool**:
+### 3.4 Settings
 
-1. **VS Code Extension** (Recommended):
-   * Extension ID: `platformio.platformio-ide` (see `.vscode/extensions.json`)
-   * Provides: Toolbar buttons, IntelliSense, integrated build/upload/monitor
-   * Configuration: `.vscode/c_cpp_properties.json`, `.vscode/tasks.json`
-   * Usage: Click Build (✓), Upload (→), or Monitor (🔌) buttons
+Chỉ còn 1 setting:
+- `Show Controls`
+  - ON → hiển thị nút
+  - OFF → ẩn toàn bộ:
+    - Nút
+    - Khung chứa nút
 
-2. **CLI Tool** (`pio` command):
-   * **Installation**: Python package (typically `pip install platformio`)
-   * **Windows Location**: `C:\Users\<user>\AppData\Local\Programs\Python\Python3xx\Scripts\pio.exe`
-   * **Verify**: `which pio` (Git Bash) or `where.exe pio` (cmd)
-   * **Usage**: `pio run`, `pio run -t upload`, etc.
+## 4. Flashcard Study Screen
 
-**Configuration Files**:
-* `platformio.ini`: Main build configuration (committed to git)
-* `platformio.local.ini`: Local overrides (gitignored, create if needed)
-* `partitions.csv`: ESP32 flash partition layout
+### 4.1 Layout (Vertical Only)
 
-### Build Environment
-* **Standard**: C++20 (`-std=c++2a`). No Exceptions, No RTTI.
-* **Logging**: ALWAYS use `LOG_INF`, `LOG_DBG`, or `LOG_ERR` from `Logging.h`. Raw Serial output is deprecated.
-* **Environments** (in `platformio.ini`):
-  * `default`: Development (LOG_LEVEL=2, serial enabled)
-  * `gh_release`: Production (LOG_LEVEL=0)
-  * `gh_release_rc`: Release candidate (LOG_LEVEL=1)
-  * `slim`: Minimal build (no serial logging)
+[ Centered Content ]
 
-### Critical Build Flags
-These flags in `platformio.ini` fundamentally affect firmware behavior:
+  Front
+  Notes + Reading
+  Divider
+  Back
+  Example
 
-```cpp
--DEINK_DISPLAY_SINGLE_BUFFER_MODE=1  // Single framebuffer (saves 48KB RAM!)
--DARDUINO_USB_MODE=1                 // Enable USB CDC
--DARDUINO_USB_CDC_ON_BOOT=1          // Serial available immediately at boot
--DXML_CONTEXT_BYTES=1024             // XML parser memory limit (EPUB parsing)
--DUSE_UTF8_LONG_NAMES=1              // SD card long filename support
--DMINIZ_NO_ZLIB_COMPATIBLE_NAMES=1   // Avoid zlib name conflicts
--DXML_GE=0                           // Disable XML general entities (security)
-```
+[ Spacer ]
 
-**SINGLE_BUFFER_MODE implications**:
-- Only ONE framebuffer exists (not double-buffered)
-- Grayscale rendering requires temporary buffer allocation (`renderer.storeBwBuffer()`)
-- Must call `renderer.restoreBwBuffer()` to free temporary buffers
-- See [lib/GfxRenderer/GfxRenderer.cpp:439-440](../lib/GfxRenderer/GfxRenderer.cpp) for malloc usage
+[ Bottom Controls ]
 
-### Directory Structure
-* lib/: Internal libraries (Epub engine, GfxRenderer, UITheme, I18n)
-  * lib/hal/: Hardware Abstraction Layer (HalDisplay, HalGPIO, HalStorage)
-  * lib/I18n/: Internationalization (translations in `translations/*.yaml`, generated string tables)
-* src/activities/: UI logic using the Activity Lifecycle (onEnter, loop, onExit)
-* open-x4-sdk/: Low-level SDK (EInkDisplay, InputManager, BatteryMonitor, SDCardManager)
-* .crosspoint/: SD-based binary cache for EPUB metadata and pre-rendered layout sections
+### 4.2 Nội dung hiển thị
 
-### Hardware Abstraction Layer (HAL)
+1. Front (Từ vựng)
+   - Text: `agreement`
+   - Căn giữa
+   - Bold
+   - Font: 36–48px
+   - Auto-scale để không tràn màn hình
 
-**CRITICAL**: Always use HAL classes, NOT SDK classes directly.
+2. Notes + Reading
+   - Format: `(n) /əˈgrimənt/`
+   - Yêu cầu:
+     - Reading luôn nằm giữa `/ /`
+     - Không bị lỗi ký tự IPA
+   - Font nhỏ hơn front
 
-| HAL Class | Wraps SDK Class | Purpose | Singleton Macro |
-|-----------|----------------|---------|-----------------|
-| `HalDisplay` | `EInkDisplay` | E-ink display control | *(none)* |
-| `HalGPIO` | `InputManager` | Button input handling | *(none)* |
-| `HalStorage` | `SDCardManager` | SD card file I/O | `Storage` |
+3. Divider
+   - Line ngang
+   - Thickness: 2–3px
+   - Margin: 16–24px
 
-**Location**: [lib/hal/](../lib/hal/)
+4. Back (Nghĩa)
+   - Text: `hợp đồng`
+   - Căn giữa
+   - Font: 28–36px
 
-**Why HAL?**
-- Provides consistent error logging per module
-- Abstracts SDK implementation details
-- Centralizes resource management
+5. Example
+   - Căn giữa
+   - Wrap text
+   - Font: 16–18px
 
-**Example - HalStorage**:
-```cpp
-#include <HalStorage.h>
+### 4.3 Căn giữa nội dung (QUAN TRỌNG)
 
-// Use Storage singleton (defined via macro)
-FsFile file;
-if (Storage.openFileForRead("MODULE", "/path/to/file.bin", file)) {
-  // Read from file
-  file.close();  // Explicit close required
-}
-```
+Yêu cầu:
+- Toàn bộ block nội dung luôn nằm giữa màn hình
+- Khi flip, khi hiển thị back:
+  - KHÔNG được nhảy layout
+  - KHÔNG được dịch vị trí
 
-**Usage**: See example above. Uses `FsFile` (SdFat), NOT Arduino `File`.
+## 5. Controls (Bottom Bar)
 
----
+### 5.1 Layout
 
-## Coding Standards
+`<< Back | Ease | Flip | Next`
 
-### Naming Conventions
-* Classes: PascalCase (e.g., EpubReaderActivity)
-* Methods/Variables: camelCase (e.g., renderPage())
-* Constants: UPPER_SNAKE_CASE (e.g., MAX_BUFFER_SIZE)
-* Private Members: memberVariable (no prefix)
-* File Names: Match Class names (e.g., EpubReaderActivity.cpp)
+### 5.2 Hành vi
 
-### Header Guards
-* Use #pragma once for all header files.
+- `<< Back`
+  - Quay về card trước (history đơn giản)
+- `Ease`
+  - KHÔNG làm gì
+  - Chỉ hiển thị (placeholder)
+- `Flip`
+  - Front ↔ Back
+- `Next`
+  - Load card random mới
 
-### Memory Safety and RAII
-* Smart Pointers: Prefer std::unique_ptr. Avoid std::shared_ptr (unnecessary atomic overhead for a single-core RISC-V).
-* RAII: Use destructors for cleanup, but call file.close() or vTaskDelete() explicitly for deterministic resource release.
+### 5.3 Phím vật lý
 
-### ESP32-C3 Platform Pitfalls
+| Key | Action |
+|-----|--------|
+| UP  | Flip   |
+| DOWN| Next   |
 
-#### `std::string_view` and Null Termination
-`string_view` is *not* null-terminated. Passing `.data()` to any C-style API (`drawText`, `snprintf`, `strcmp`, SdFat file paths) is undefined behaviour when the view is a substring or a view of a non-null-terminated buffer.
+## 6. Study Behavior
 
-**Rule**: `string_view` is safe only when passing to C++ APIs that accept `string_view`. For any C API boundary, convert explicitly:
-```cpp
-// WRONG - undefined behaviour if view is a substring:
-renderer.drawText(font, x, y, myView.data(), true);
+### 6.1 Default
+- Hiển thị Front
 
-// CORRECT - guaranteed null-terminated:
-renderer.drawText(font, x, y, std::string(myView).c_str(), true);
+### 6.2 Flip
+- Hiển thị:
+  - Back
+  - Example
 
-// CORRECT - for short strings, use a stack buffer:
-char buf[64];
-snprintf(buf, sizeof(buf), "%.*s", (int)myView.size(), myView.data());
-```
+### 6.3 Next
+- Random card mới
 
-#### `IRAM_ATTR` and Flash Cache Safety
-All code runs from flash via the instruction cache. During SPI flash operations (OTA write, SPIFFS commit, NVS update) the cache is briefly suspended. Any code that can execute during this window — ISRs in particular — must reside in IRAM or it will crash silently.
+## 7. Session & Resume
 
-```cpp
-// ISR handler: must be in IRAM
-void IRAM_ATTR gpioISR() { ... }
+### 7.1 Lưu trạng thái
+- `deck_name`
+- `last_screen = Flashcard`
 
-// Data accessed from IRAM_ATTR code: must be in DRAM, never a flash const
-static DRAM_ATTR uint32_t isrEventFlags = 0;
-```
+### 7.2 Khi mở app
+Nếu `last_screen == Flashcard`:
+- load deck
+- pick random card
+- show screen
 
-**Rules**:
-- All ISR handlers: `IRAM_ATTR`
-- Data read by `IRAM_ATTR` code: `DRAM_ATTR` (a flash-resident `static const` will fault)
-- Normal task code does **not** need `IRAM_ATTR`
+### 7.3 Sleep / Wake
+Yêu cầu:
+- Nếu đang học:
+  - Wake → vào lại Flashcard
+  - Load deck
+  - Random card mới
 
-#### ISR vs Task Shared State
-`xSemaphoreTake()` (mutex) **cannot** be called from ISR context — it will crash. Use the correct primitive for each communication direction:
+## 8. Performance (E-Ink)
 
-| Direction | Correct primitive |
-|---|---|
-| ISR → task (data) | `xQueueSendFromISR()` + `portYIELD_FROM_ISR()` |
-| ISR → task (signal) | `xSemaphoreGiveFromISR()` + `portYIELD_FROM_ISR()` |
-| Task → task | `xSemaphoreTake()` / mutex |
-| Simple flag (single writer ISR) | `volatile bool` + `portENTER_CRITICAL_ISR()` |
+- Không refresh nhỏ lẻ
+- Render 1 lần
+- Layout cố định
+- Tránh animation
 
-#### RISC-V Alignment
-ESP32-C3 faults on unaligned multi-byte loads. Never cast a `uint8_t*` buffer to a wider pointer type and dereference it directly. Use `memcpy` for any unaligned read:
+## 9. Font Requirements
 
-```cpp
-// WRONG — faults if buf is not 4-byte aligned:
-uint32_t val = *reinterpret_cast<const uint32_t*>(buf);
+Bắt buộc:
+- Hỗ trợ đầy đủ:
+  - Tiếng Việt
+  - IPA
+- Ví dụ ký tự: `ə ɪ ʊ θ ð ʃ ʒ ˌ ˈ`
 
-// CORRECT:
-uint32_t val;
-memcpy(&val, buf, sizeof(val));
-```
+## 10. Các lỗi bắt buộc fix
 
-This applies to all cache deserialization code and any raw buffer-to-struct casting. `__attribute__((packed))` structs have the same hazard when accessed via member reference.
+- ❌ Không hiển thị tiếng Việt → FIX
+- ❌ Không hiển thị IPA → FIX
+- ❌ Deck list sai → FIX
+- ❌ Settings không hoạt động → FIX
+- ❌ Sleep không resume → FIX
+- ❌ Layout bị nhảy khi flip → FIX
+- ❌ Nút bấm sai → FIX
 
-#### Template and `std::function` Bloat
-Each template instantiation generates a separate binary copy. `std::function<void()>` adds ~2–4 KB per unique signature and heap-allocates its closure. Avoid both in library code and any path called from the render loop:
+## 11. Ràng buộc
 
-```cpp
-// Avoid — heap-allocating, large binary footprint:
-std::function<void()> callback;
+- Không thêm feature ngoài spec
+- Không thêm tracking học
+- Không thêm spaced repetition
+- Code theo chuẩn: `crosspoint-reader/CLAUDE.md`
+- Sử dụng environment `venv/bin/activate`
+- Sử dụng `pio run --target upload` từ thư mục `crosspoint-reader` để flash firmware
 
-// Prefer — zero overhead:
-void (*callback)() = nullptr;
-
-// For member function + context (common activity callback pattern):
-struct Callback { void* ctx; void (*fn)(void*); };
-```
-
-When a template is necessary, limit instantiations: use explicit template instantiation in a `.cpp` file to prevent the compiler from generating duplicates across translation units.
-
----
-
-### Error Handling Philosophy
-
-**Source**: [src/main.cpp:132-143](../src/main.cpp), [lib/GfxRenderer/GfxRenderer.cpp:10](../lib/GfxRenderer/GfxRenderer.cpp)
-
-**Pattern Hierarchy**:
-1. **LOG_ERR + return false** (90%): `LOG_ERR("MOD", "Failed: %s", reason); return false;`
-2. **LOG_ERR + fallback**: `LOG_ERR("MOD", "Unavailable"); useDefault();`
-3. **assert(false)**: Only for fatal "impossible" states (framebuffer missing)
-4. **ESP.restart()**: Only for recovery (OTA complete)
-
-**Rules**: NO exceptions, NO abort(), ALWAYS log before error return
-
-### Acceptable malloc/free Patterns
 
 **Source**: [src/activities/home/HomeActivity.cpp:166](../src/activities/home/HomeActivity.cpp), [lib/GfxRenderer/GfxRenderer.cpp:439-440](../lib/GfxRenderer/GfxRenderer.cpp)
 

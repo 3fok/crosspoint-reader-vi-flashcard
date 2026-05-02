@@ -87,6 +87,8 @@ class ActivityManager {
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goHome();
+  void goToFlashcardMenu();
+  void goToFlashcardStudy();
 
   // This will move current activity to stack instead of deleting it
   void pushActivity(std::unique_ptr<Activity>&& activity);
@@ -98,6 +100,8 @@ class ActivityManager {
   bool preventAutoSleep() const;
   bool isReaderActivity() const;
   bool skipLoopDelay() const;
+  /// True if pushActivity was used and there is a parent activity to return to with popActivity/finish().
+  bool canPopActivity() const { return !stackActivities.empty(); }
 
   // If immediate is true, the update will be triggered immediately.
   // Otherwise, it will be deferred until the end of the current loop iteration.

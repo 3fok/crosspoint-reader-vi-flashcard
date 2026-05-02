@@ -10,6 +10,8 @@
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "reader/ReaderActivity.h"
+#include "flashcard/FlashcardMenuActivity.h"
+#include "flashcard/FlashcardStudyActivity.h"
 #include "settings/SettingsActivity.h"
 #include "util/FullScreenMessageActivity.h"
 
@@ -197,6 +199,14 @@ void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::
 }
 
 void ActivityManager::goHome() { replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput)); }
+
+void ActivityManager::goToFlashcardMenu() {
+  replaceActivity(std::make_unique<FlashcardMenuActivity>(renderer, mappedInput));
+}
+
+void ActivityManager::goToFlashcardStudy() {
+  replaceActivity(std::make_unique<FlashcardStudyActivity>(renderer, mappedInput));
+}
 
 void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
   if (pendingActivity) {

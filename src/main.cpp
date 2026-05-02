@@ -17,6 +17,7 @@
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "flashcard/FlashcardStore.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
@@ -291,10 +292,15 @@ void setup() {
   APP_STATE.loadFromFile();
   RECENT_BOOKS.loadFromFile();
 
-  // Boot to home screen if no book is open, last sleep was not from reader, back button is held, or reader activity
-  // crashed (indicated by readerActivityLoadCount > 0)
-  if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
-      mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
+  const bool resumeFlashcard =
+      APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard && flashcard::hasDeck() &&
+      flashcard::getCardCount() > 0 && !APP_STATE.flashcardDeckName.empty() &&
+      flashcard::getDeckName() == APP_STATE.flashcardDeckName;
+
+  if (resumeFlashcard) {
+    activityManager.goToFlashcardStudy();
+  } else if (APP_STATE.openEpubPath.empty() || !APP_STATE.lastSleepFromReader ||
+             mappedInputManager.isPressed(MappedInputManager::Button::Back) || APP_STATE.readerActivityLoadCount > 0) {
     activityManager.goHome();
   } else {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load

@@ -72,6 +72,14 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
   doc["lastSleepImage"] = s.lastSleepImage;
   doc["readerActivityLoadCount"] = s.readerActivityLoadCount;
   doc["lastSleepFromReader"] = s.lastSleepFromReader;
+  const char* screenKey = "none";
+  if (s.lastScreen == CrossPointState::LastScreen::Reader) {
+    screenKey = "reader";
+  } else if (s.lastScreen == CrossPointState::LastScreen::Flashcard) {
+    screenKey = "flashcard";
+  }
+  doc["lastScreen"] = screenKey;
+  doc["flashcardDeckName"] = s.flashcardDeckName;
 
   String json;
   serializeJson(doc, json);
@@ -90,6 +98,15 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   s.lastSleepImage = doc["lastSleepImage"] | (uint8_t)UINT8_MAX;
   s.readerActivityLoadCount = doc["readerActivityLoadCount"] | (uint8_t)0;
   s.lastSleepFromReader = doc["lastSleepFromReader"] | false;
+  const std::string lastScreenStr = doc["lastScreen"] | std::string("");
+  if (lastScreenStr == "reader") {
+    s.lastScreen = CrossPointState::LastScreen::Reader;
+  } else if (lastScreenStr == "flashcard") {
+    s.lastScreen = CrossPointState::LastScreen::Flashcard;
+  } else {
+    s.lastScreen = CrossPointState::LastScreen::None;
+  }
+  s.flashcardDeckName = doc["flashcardDeckName"] | std::string("");
   return true;
 }
 
