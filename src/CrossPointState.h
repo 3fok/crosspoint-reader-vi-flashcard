@@ -16,7 +16,9 @@ class CrossPointState {
   bool lastSleepFromReader = false;
   bool lastSleepFromFlashcard = false;
   LastScreen lastScreen = LastScreen::None;
-  /// When lastScreen == Flashcard, must match the deck stored in flashcard_deck.bin for resume.
+  /// When lastScreen == Flashcard, stores the active deck path for resume.
+  std::string flashcardDeckPath;
+  /// Human-readable deck name for display.
   std::string flashcardDeckName;
   ~CrossPointState() = default;
 

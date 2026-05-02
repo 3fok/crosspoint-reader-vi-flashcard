@@ -5,6 +5,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -188,9 +189,9 @@ class JsonStreamReader {
   std::string dummy_;
 };
 
-bool parseDeckFromJsonStream(HalFile& in, std::string& deckName, std::vector<FlashcardCard>& parsed) {
+bool parseDeckFromJsonStream(HalFile& in, std::string& deckName,
+                             const std::function<bool(const FlashcardCard&)>& onCard) {
   JsonStreamReader r(in);
-  parsed.clear();
   deckName.clear();
 
   if (!r.consume('{')) return false;
@@ -214,50 +215,56 @@ bool parseDeckFromJsonStream(HalFile& in, std::string& deckName, std::vector<Fla
     } else if (key == "cards") {
       if (!r.consume('[')) return false;
       if (!r.skipWhitespace()) return false;
-      while (r.peek() != ']') {
-        if (!r.consume('{')) return false;
-        FlashcardCard row;
+      if (r.peek() == ']') {
+        r.read();
+      } else {
         while (true) {
-          std::string cardKey;
-          if (!r.readString(cardKey, 64)) return false;
-          if (!r.consume(':')) return false;
-          std::string value;
-          if (!r.readString(value, flashcard::kMaxFieldBytes)) return false;
-          if (cardKey == "front") row.front = std::move(value);
-          else if (cardKey == "back") row.back = std::move(value);
-          else if (cardKey == "notes") row.notes = std::move(value);
-          else if (cardKey == "reading") row.reading = std::move(value);
-          else if (cardKey == "example") row.example = std::move(value);
+          if (!r.consume('{')) return false;
+          FlashcardCard row;
+          while (true) {
+            std::string cardKey;
+            if (!r.readString(cardKey, 64)) return false;
+            if (!r.consume(':')) return false;
+            std::string value;
+            if (!r.readString(value, flashcard::kMaxFieldBytes)) return false;
+            if (cardKey == "front") row.front = std::move(value);
+            else if (cardKey == "back") row.back = std::move(value);
+            else if (cardKey == "notes") row.notes = std::move(value);
+            else if (cardKey == "reading") row.reading = std::move(value);
+            else if (cardKey == "example") row.example = std::move(value);
+            if (!r.skipWhitespace()) return false;
+            const int nextField = r.peek();
+            if (nextField == ',') {
+              r.read();
+              continue;
+            }
+            if (nextField == '}') {
+              r.read();
+              break;
+            }
+            return false;
+          }
+          if (row.front.empty()) return false;
+          if (row.front.size() > flashcard::kMaxFieldBytes || row.back.size() > flashcard::kMaxFieldBytes ||
+              row.notes.size() > flashcard::kMaxFieldBytes || row.reading.size() > flashcard::kMaxFieldBytes ||
+              row.example.size() > flashcard::kMaxFieldBytes) {
+            return false;
+          }
+          if (!onCard(row)) return false;
+          haveCards = true;
           if (!r.skipWhitespace()) return false;
           const int next = r.peek();
           if (next == ',') {
             r.read();
             continue;
           }
-          if (next == '}') {
+          if (next == ']') {
             r.read();
             break;
           }
           return false;
         }
-        if (row.front.empty()) return false;
-        if (row.front.size() > flashcard::kMaxFieldBytes || row.back.size() > flashcard::kMaxFieldBytes ||
-            row.notes.size() > flashcard::kMaxFieldBytes || row.reading.size() > flashcard::kMaxFieldBytes ||
-            row.example.size() > flashcard::kMaxFieldBytes) {
-          return false;
-        }
-        parsed.push_back(std::move(row));
-        if (!r.skipWhitespace()) return false;
-        const int next = r.peek();
-        if (next == ',') {
-          r.read();
-          continue;
-        }
-        if (next == ']') break;
-        return false;
       }
-      if (!r.consume(']')) return false;
-      haveCards = !parsed.empty();
     } else {
       if (!r.skipValue()) return false;
     }
@@ -377,27 +384,28 @@ bool importDeckFromJsonFile(const char* jsonPath) {
     return false;
   }
 
-  HalFile in;
-  if (!Storage.openFileForRead("FC", jsonPath, in)) {
-    LOG_ERR("FC", "import: open read failed");
-    return false;
-  }
-
-  std::vector<FlashcardCard> parsed;
-  parsed.reserve(128);
   std::string deckName;
-  const bool ok = parseDeckFromJsonStream(in, deckName, parsed);
-  in.close();
-  if (!ok) {
-    LOG_ERR("FC", "import: parse failed");
-    return false;
+  uint32_t cardCount = 0;
+  {
+    HalFile in;
+    if (!Storage.openFileForRead("FC", jsonPath, in)) {
+      LOG_ERR("FC", "import: open read failed");
+      return false;
+    }
+    const bool ok = parseDeckFromJsonStream(in, deckName, [&](const FlashcardCard&) {
+      ++cardCount;
+      return true;
+    });
+    in.close();
+    if (!ok || deckName.empty() || cardCount == 0) {
+      LOG_ERR("FC", "import: parse failed");
+      return false;
+    }
   }
 
-  Storage.mkdir(kFlashcardStorageDir);
   const std::string deckBinPath = deckBinPathFromJsonPath(jsonPath);
-  if (Storage.exists(deckBinPath.c_str())) {
-    Storage.remove(deckBinPath.c_str());
-  }
+  Storage.mkdir(kFlashcardStorageDir);
+  if (Storage.exists(deckBinPath.c_str())) Storage.remove(deckBinPath.c_str());
 
   HalFile out;
   if (!Storage.openFileForWrite("FC", deckBinPath.c_str(), out)) {
@@ -416,23 +424,16 @@ bool importDeckFromJsonFile(const char* jsonPath) {
     Storage.remove(deckBinPath.c_str());
     return false;
   }
-
   const uint32_t nameLen = static_cast<uint32_t>(deckName.size());
-  if (!writeU32(out, nameLen) || (nameLen > 0 && out.write(deckName.data(), nameLen) != nameLen)) {
-    out.close();
-    Storage.remove(deckBinPath.c_str());
-    return false;
-  }
-
-  const uint32_t n = static_cast<uint32_t>(parsed.size());
-  if (!writeU32(out, n)) {
+  if (!writeU32(out, nameLen) || (nameLen > 0 && out.write(deckName.data(), nameLen) != nameLen) ||
+      !writeU32(out, cardCount)) {
     out.close();
     Storage.remove(deckBinPath.c_str());
     return false;
   }
 
   const uint32_t offsetTablePos = static_cast<uint32_t>(out.position());
-  for (uint32_t i = 0; i < n; i++) {
+  for (uint32_t i = 0; i < cardCount; ++i) {
     if (!writeU32(out, 0)) {
       out.close();
       Storage.remove(deckBinPath.c_str());
@@ -441,12 +442,28 @@ bool importDeckFromJsonFile(const char* jsonPath) {
   }
 
   std::vector<uint32_t> absOffsets;
-  absOffsets.reserve(n);
-  for (uint32_t i = 0; i < n; i++) {
-    absOffsets.push_back(static_cast<uint32_t>(out.position()));
-    const FlashcardCard& row = parsed[i];
-    if (!writeStringField(out, row.front) || !writeStringField(out, row.back) || !writeStringField(out, row.notes) ||
-        !writeStringField(out, row.reading) || !writeStringField(out, row.example)) {
+  absOffsets.reserve(cardCount);
+
+  {
+    HalFile in;
+    if (!Storage.openFileForRead("FC", jsonPath, in)) {
+      out.close();
+      Storage.remove(deckBinPath.c_str());
+      return false;
+    }
+
+    uint32_t written = 0;
+    const bool ok = parseDeckFromJsonStream(in, deckName, [&](const FlashcardCard& row) {
+      absOffsets.push_back(static_cast<uint32_t>(out.position()));
+      if (!writeStringField(out, row.front) || !writeStringField(out, row.back) || !writeStringField(out, row.notes) ||
+          !writeStringField(out, row.reading) || !writeStringField(out, row.example)) {
+        return false;
+      }
+      ++written;
+      return true;
+    });
+    in.close();
+    if (!ok || written != cardCount) {
       out.close();
       Storage.remove(deckBinPath.c_str());
       return false;
@@ -458,8 +475,8 @@ bool importDeckFromJsonFile(const char* jsonPath) {
     Storage.remove(deckBinPath.c_str());
     return false;
   }
-  for (uint32_t i = 0; i < n; i++) {
-    if (!writeU32(out, absOffsets[i])) {
+  for (uint32_t off : absOffsets) {
+    if (!writeU32(out, off)) {
       out.close();
       Storage.remove(deckBinPath.c_str());
       return false;
@@ -468,7 +485,7 @@ bool importDeckFromJsonFile(const char* jsonPath) {
 
   out.close();
   setActiveDeckPath(deckBinPath);
-  LOG_DBG("FC", "import ok: %u cards", static_cast<unsigned>(n));
+  LOG_DBG("FC", "import ok: %u cards", static_cast<unsigned>(cardCount));
   return true;
 }
 

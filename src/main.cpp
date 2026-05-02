@@ -189,6 +189,10 @@ void enterDeepSleep() {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
   APP_STATE.lastSleepFromFlashcard = APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard;
+  if (APP_STATE.lastSleepFromFlashcard) {
+    APP_STATE.flashcardDeckPath = flashcard::getActiveDeckPath();
+    APP_STATE.flashcardDeckName = flashcard::getDeckName();
+  }
   APP_STATE.saveToFile();
 
   activityManager.goToSleep();
@@ -297,10 +301,9 @@ void setup() {
   const bool resumeReader = !APP_STATE.openEpubPath.empty() && APP_STATE.lastSleepFromReader &&
                             !mappedInputManager.isPressed(MappedInputManager::Button::Back) &&
                             APP_STATE.readerActivityLoadCount == 0;
-  const bool resumeFlashcard =
-      !resumeReader && APP_STATE.lastSleepFromFlashcard && APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard &&
-      flashcard::hasDeck() && flashcard::getCardCount() > 0 && !APP_STATE.flashcardDeckName.empty() &&
-      flashcard::getDeckName() == APP_STATE.flashcardDeckName;
+  const bool resumeFlashcard = !resumeReader && APP_STATE.lastSleepFromFlashcard &&
+                                APP_STATE.lastScreen == CrossPointState::LastScreen::Flashcard &&
+                                !APP_STATE.flashcardDeckPath.empty();
 
   if (resumeReader) {
     // Clear app state to avoid getting into a boot loop if the epub doesn't load
@@ -310,6 +313,7 @@ void setup() {
     APP_STATE.saveToFile();
     activityManager.goToReader(path);
   } else if (resumeFlashcard) {
+    flashcard::setActiveDeckPath(APP_STATE.flashcardDeckPath);
     APP_STATE.lastSleepFromFlashcard = false;
     APP_STATE.saveToFile();
     activityManager.goToFlashcardStudy();

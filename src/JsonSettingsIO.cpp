@@ -80,6 +80,7 @@ bool JsonSettingsIO::saveState(const CrossPointState& s, const char* path) {
     screenKey = "flashcard";
   }
   doc["lastScreen"] = screenKey;
+  doc["flashcardDeckPath"] = s.flashcardDeckPath;
   doc["flashcardDeckName"] = s.flashcardDeckName;
 
   String json;
@@ -108,6 +109,7 @@ bool JsonSettingsIO::loadState(CrossPointState& s, const char* json) {
   } else {
     s.lastScreen = CrossPointState::LastScreen::None;
   }
+  s.flashcardDeckPath = doc["flashcardDeckPath"] | std::string("");
   s.flashcardDeckName = doc["flashcardDeckName"] | std::string("");
   return true;
 }

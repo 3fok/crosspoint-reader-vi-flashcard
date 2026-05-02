@@ -132,10 +132,11 @@ int FlashcardMenuActivity::listCountForPanel() const {
 
 void FlashcardMenuActivity::openStudy(const std::string& deckPath) {
   if (!Storage.exists(deckPath.c_str())) return;
-  const size_t pos = deckPath.find_last_of('/');
-  if (pos != std::string::npos && pos + 1 < deckPath.size()) {
-    flashcard::setActiveDeckFile(deckPath.substr(pos + 1));
-  }
+  flashcard::setActiveDeckPath(deckPath);
+  APP_STATE.flashcardDeckPath = deckPath;
+  APP_STATE.flashcardDeckName = flashcard::getDeckName(deckPath.c_str());
+  APP_STATE.lastScreen = CrossPointState::LastScreen::Flashcard;
+  APP_STATE.saveToFile();
   startActivityForResult(std::make_unique<FlashcardStudyActivity>(renderer, mappedInput),
                          [this](const ActivityResult&) {
                            (void)flashcard::loadShowControls(showControlsPref);

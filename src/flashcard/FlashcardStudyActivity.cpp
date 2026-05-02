@@ -57,31 +57,29 @@ std::vector<std::string> splitUtf8Chars(const std::string& s) {
 std::vector<std::string> wrapWithHyphenation(const GfxRenderer& r, int fontId, const std::string& text, int maxWidth,
                                              EpdFontFamily::Style style, int maxLines) {
   std::vector<std::string> lines;
-  std::istringstream iss(text);
-  std::string word;
   std::string line;
 
-  auto pushLine = [&]() {
-    if (!line.empty()) {
-      lines.push_back(line);
-      line.clear();
-    }
-  };
+  auto fits = [&](const std::string& s) { return r.getTextWidth(fontId, s.c_str(), style) <= maxWidth; };
 
-  auto fits = [&](const std::string& s) {
-    return r.getTextWidth(fontId, s.c_str(), style) <= maxWidth;
-  };
+  size_t i = 0;
+  while (i < text.size()) {
+    while (i < text.size() && std::isspace(static_cast<unsigned char>(text[i]))) i++;
+    if (i >= text.size()) break;
 
-  while (iss >> word) {
+    const size_t start = i;
+    while (i < text.size() && !std::isspace(static_cast<unsigned char>(text[i]))) i++;
+    const std::string word = text.substr(start, i - start);
+
     const std::string candidate = line.empty() ? word : line + ' ' + word;
     if (fits(candidate)) {
       line = candidate;
       continue;
     }
 
-    pushLine();
-    if (static_cast<int>(lines.size()) >= maxLines) {
-      break;
+    if (!line.empty()) {
+      lines.push_back(line);
+      line.clear();
+      if (static_cast<int>(lines.size()) >= maxLines) break;
     }
 
     if (fits(word)) {
@@ -94,27 +92,18 @@ std::vector<std::string> wrapWithHyphenation(const GfxRenderer& r, int fontId, c
       const std::string trial = part + ch;
       if (fits(trial + '-')) {
         part = trial;
-        continue;
-      }
-      if (!part.empty()) {
-        lines.push_back(part + '-');
-        part = ch;
-        if (static_cast<int>(lines.size()) >= maxLines) {
-          break;
-        }
       } else {
+        if (!part.empty()) {
+          lines.push_back(part + '-');
+          if (static_cast<int>(lines.size()) >= maxLines) return lines;
+        }
         part = ch;
       }
-    }
-    if (static_cast<int>(lines.size()) >= maxLines) {
-      break;
     }
     line = part;
   }
 
-  if (!line.empty() && static_cast<int>(lines.size()) < maxLines) {
-    lines.push_back(line);
-  }
+  if (!line.empty() && static_cast<int>(lines.size()) < maxLines) lines.push_back(line);
   return lines;
 }
 
@@ -155,7 +144,8 @@ FlashcardStudyActivity::FlashcardStudyActivity(GfxRenderer& renderer, MappedInpu
 
 void FlashcardStudyActivity::persistStudyState() {
   APP_STATE.lastScreen = CrossPointState::LastScreen::Flashcard;
-  APP_STATE.flashcardDeckName = flashcard::getDeckName();
+  const std::string deckPath = flashcard::getActiveDeckPath();
+  APP_STATE.flashcardDeckName = flashcard::getDeckName(deckPath.c_str());
   APP_STATE.saveToFile();
 }
 
@@ -248,7 +238,8 @@ void FlashcardStudyActivity::drawStudyContent(const int contentTop, const int co
 
   // Reserve space for back/example and compute a centered layout dynamically.
   auto front = fitFront(card.front, availableH / 3);
-  auto notes = fitRegular(formatNotesReading(card), availableH / 4, notesFonts, sizeof(notesFonts) / sizeof(notesFonts[0]), kMaxNotesLines, EpdFontFamily::REGULAR);
+  auto notes = fitRegular(formatNotesReading(card), availableH / 4, notesFonts,
+                          sizeof(notesFonts) / sizeof(notesFonts[0]), kMaxNotesLines, EpdFontFamily::REGULAR);
   auto back = flipped ? fitRegular(card.back, availableH / 4, bodyFonts, sizeof(bodyFonts) / sizeof(bodyFonts[0]), kMaxBackLines, EpdFontFamily::BOLD) : BlockLayout{};
   auto example = flipped ? fitRegular(card.example, availableH - 2 * kGap, exampleFonts, sizeof(exampleFonts) / sizeof(exampleFonts[0]), kMaxExampleLines, EpdFontFamily::REGULAR) : BlockLayout{};
 
