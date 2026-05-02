@@ -25,9 +25,11 @@ class FlashcardMenuActivity final : public Activity {
   std::vector<std::string> importEntries;
   bool showControlsPref = true;
   std::string statusMessage;
+  std::vector<std::string> deckEntries;
 
   void loadImportEntries();
+  void loadDeckEntries();
   int listCountForPanel() const;
-  void openStudy();
+  void openStudy(const std::string& deckPath);
   static bool isExcludedSettingsJson(const char* baseName);
 };

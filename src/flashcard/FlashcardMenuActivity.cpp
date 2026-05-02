@@ -14,6 +14,7 @@
 #include "activities/ActivityManager.h"
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "FlashcardPaths.h"
 #include "FlashcardPrefs.h"
 #include "FlashcardStore.h"
 #include "FlashcardStudyActivity.h"
@@ -34,14 +35,12 @@ void sortEntries(std::vector<std::string>& strs) {
 }
 
 std::string joinPath(const std::string& base, const std::string& name) {
-  if (base == "/" || base.empty()) {
-    return std::string("/") + name;
-  }
-  if (base.back() == '/') {
-    return base + name;
-  }
+  if (base == "/" || base.empty()) return std::string("/") + name;
+  if (base.back() == '/') return base + name;
   return base + "/" + name;
 }
+
+bool hasBinExt(const std::string& s) { return FsHelpers::checkFileExtension(std::string_view{s}, ".bin"); }
 
 }  // namespace
 
@@ -58,8 +57,10 @@ void FlashcardMenuActivity::onEnter() {
   selectorIndex = 0;
   importBasePath = "/";
   importEntries.clear();
+  deckEntries.clear();
   statusMessage.clear();
   (void)flashcard::loadShowControls(showControlsPref);
+  loadDeckEntries();
   requestUpdate();
 }
 
@@ -95,29 +96,52 @@ void FlashcardMenuActivity::loadImportEntries() {
   sortEntries(importEntries);
 }
 
+void FlashcardMenuActivity::loadDeckEntries() {
+  deckEntries.clear();
+  auto root = Storage.open("/flashcards");
+  if (!root || !root.isDirectory()) {
+    if (root) root.close();
+    return;
+  }
+  root.rewindDirectory();
+  char name[500];
+  for (auto file = root.openNextFile(); file; file = root.openNextFile()) {
+    file.getName(name, sizeof(name));
+    if ((!SETTINGS.showHiddenFiles && name[0] == '.') || strcmp(name, "System Volume Information") == 0) {
+      file.close();
+      continue;
+    }
+    if (!file.isDirectory() && hasBinExt(std::string{name})) {
+      deckEntries.emplace_back(name);
+    }
+    file.close();
+  }
+  root.close();
+  sortEntries(deckEntries);
+}
+
 int FlashcardMenuActivity::listCountForPanel() const {
   switch (panel) {
-    case Panel::Root:
-      return 3;
-    case Panel::DeckList:
-      return 1;
-    case Panel::ImportDeck:
-      return static_cast<int>(importEntries.size());
-    case Panel::Settings:
-      return 1;
+    case Panel::Root: return 3;
+    case Panel::DeckList: return static_cast<int>(deckEntries.size());
+    case Panel::ImportDeck: return static_cast<int>(importEntries.size());
+    case Panel::Settings: return 1;
   }
   return 0;
 }
 
-void FlashcardMenuActivity::openStudy() {
-  if (!flashcard::hasDeck() || flashcard::getCardCount() == 0) {
-    return;
+void FlashcardMenuActivity::openStudy(const std::string& deckPath) {
+  if (!Storage.exists(deckPath.c_str())) return;
+  const size_t pos = deckPath.find_last_of('/');
+  if (pos != std::string::npos && pos + 1 < deckPath.size()) {
+    flashcard::setActiveDeckFile(deckPath.substr(pos + 1));
   }
   startActivityForResult(std::make_unique<FlashcardStudyActivity>(renderer, mappedInput),
-                           [this](const ActivityResult&) {
-                             (void)flashcard::loadShowControls(showControlsPref);
-                             requestUpdate();
-                           });
+                         [this](const ActivityResult&) {
+                           (void)flashcard::loadShowControls(showControlsPref);
+                           loadDeckEntries();
+                           requestUpdate();
+                         });
 }
 
 void FlashcardMenuActivity::loop() {
@@ -139,13 +163,9 @@ void FlashcardMenuActivity::loop() {
     }
     if (panel == Panel::ImportDeck && importBasePath != "/") {
       const size_t pos = importBasePath.find_last_of('/');
-      if (pos == 0) {
-        importBasePath = "/";
-      } else if (pos != std::string::npos) {
-        importBasePath = importBasePath.substr(0, pos);
-      } else {
-        importBasePath = "/";
-      }
+      if (pos == 0) importBasePath = "/";
+      else if (pos != std::string::npos) importBasePath = importBasePath.substr(0, pos);
+      else importBasePath = "/";
       loadImportEntries();
       selectorIndex = 0;
       requestUpdate();
@@ -169,9 +189,7 @@ void FlashcardMenuActivity::loop() {
     requestUpdate();
   });
 
-  if (!mappedInput.wasReleased(MappedInputManager::Button::Confirm) || count <= 0) {
-    return;
-  }
+  if (!mappedInput.wasReleased(MappedInputManager::Button::Confirm) || count <= 0) return;
 
   switch (panel) {
     case Panel::Root:
@@ -191,8 +209,10 @@ void FlashcardMenuActivity::loop() {
       requestUpdate();
       return;
     case Panel::DeckList:
-      if (flashcard::hasDeck() && flashcard::getCardCount() > 0) {
-        openStudy();
+      if (!deckEntries.empty()) {
+        const std::string deckPath = std::string("/flashcards/") + deckEntries[static_cast<size_t>(selectorIndex)];
+        flashcard::setActiveDeckPath(deckPath);
+        openStudy(deckPath);
       }
       return;
     case Panel::ImportDeck: {
@@ -208,7 +228,8 @@ void FlashcardMenuActivity::loop() {
       const std::string fullPath = joinPath(importBasePath, entry);
       if (flashcard::importDeckFromJsonFile(fullPath.c_str())) {
         statusMessage = tr(STR_FLASHCARD_IMPORT_OK);
-        panel = Panel::Root;
+        loadDeckEntries();
+        panel = Panel::DeckList;
         selectorIndex = 0;
       } else {
         statusMessage = tr(STR_FLASHCARD_IMPORT_FAIL);
@@ -235,49 +256,47 @@ void FlashcardMenuActivity::render(RenderLock&&) {
 
   const char* title = tr(STR_FLASHCARD);
   const char* sub = nullptr;
-  if (panel == Panel::ImportDeck) {
-    sub = importBasePath.c_str();
-  } else if (panel == Panel::DeckList) {
-    sub = tr(STR_FLASHCARD_DECK_LIST);
-  } else if (panel == Panel::Settings) {
-    sub = tr(STR_FLASHCARD_SETTINGS);
-  }
+  if (panel == Panel::ImportDeck) sub = importBasePath.c_str();
+  else if (panel == Panel::DeckList) sub = tr(STR_FLASHCARD_DECK_LIST);
+  else if (panel == Panel::Settings) sub = tr(STR_FLASHCARD_SETTINGS);
 
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageW, metrics.headerHeight}, title, sub);
 
   const int listTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
-  const int listHeight =
-      pageH - listTop - metrics.buttonHintsHeight - (statusMessage.empty() ? 0 : metrics.listRowHeight) - mb;
-  const Rect listRect{ml + metrics.contentSidePadding, listTop, pageW - ml - mr - 2 * metrics.contentSidePadding,
-                      listHeight};
+  const int listHeight = pageH - listTop - metrics.buttonHintsHeight - (statusMessage.empty() ? 0 : metrics.listRowHeight) - mb;
+  const Rect listRect{ml + metrics.contentSidePadding, listTop, pageW - ml - mr - 2 * metrics.contentSidePadding, listHeight};
 
   switch (panel) {
     case Panel::Root: {
-      const int n = 3;
-      GUI.drawList(
-          renderer, listRect, n, selectorIndex,
-          [this](int i) -> std::string {
-            if (i == 0) return tr(STR_FLASHCARD_DECK_LIST);
-            if (i == 1) return tr(STR_FLASHCARD_CREATE_DB);
-            return tr(STR_FLASHCARD_SETTINGS);
-          },
-          nullptr, nullptr, nullptr, false);
+      GUI.drawList(renderer, listRect, 3, selectorIndex,
+                   [](int i) -> std::string {
+                     if (i == 0) return tr(STR_FLASHCARD_DECK_LIST);
+                     if (i == 1) return tr(STR_FLASHCARD_CREATE_DB);
+                     return tr(STR_FLASHCARD_SETTINGS);
+                   },
+                   nullptr, nullptr, nullptr, false);
       break;
     }
     case Panel::DeckList: {
-      const bool has = flashcard::hasDeck() && flashcard::getCardCount() > 0;
-      const std::string deck = has ? flashcard::getDeckName() : std::string(tr(STR_FLASHCARD_NO_DECK));
-      char countBuf[48];
-      if (has) {
-        snprintf(countBuf, sizeof(countBuf), "%s: %u", tr(STR_FLASHCARDS),
-                 static_cast<unsigned>(flashcard::getCardCount()));
+      if (deckEntries.empty()) {
+        GUI.drawHelpText(renderer, listRect, tr(STR_FLASHCARD_NO_DECK));
       } else {
-        snprintf(countBuf, sizeof(countBuf), "%s", tr(STR_FLASHCARD_IMPORT_HINT));
+        GUI.drawList(renderer, listRect, static_cast<int>(deckEntries.size()), selectorIndex,
+                     [this](int i) {
+                       const size_t idx = static_cast<size_t>(i);
+                       const std::string path = std::string("/flashcards/") + deckEntries[idx];
+                       return flashcard::getDeckName(path.c_str());
+                     },
+                     [this](int i) {
+                       const size_t idx = static_cast<size_t>(i);
+                       const std::string path = std::string("/flashcards/") + deckEntries[idx];
+                       char countBuf[48];
+                       snprintf(countBuf, sizeof(countBuf), "%s: %u", tr(STR_FLASHCARDS),
+                                static_cast<unsigned>(flashcard::getCardCount(path.c_str())));
+                       return std::string(countBuf);
+                     },
+                     nullptr, nullptr, false);
       }
-      GUI.drawList(
-          renderer, listRect, 1, has ? selectorIndex : 0,
-          [&deck](int) { return deck; },
-          [&countBuf](int) { return std::string(countBuf); }, nullptr, nullptr, false);
       break;
     }
     case Panel::ImportDeck: {
@@ -285,19 +304,16 @@ void FlashcardMenuActivity::render(RenderLock&&) {
       if (n == 0) {
         GUI.drawHelpText(renderer, listRect, tr(STR_FLASHCARD_NO_JSON));
       } else {
-        GUI.drawList(
-            renderer, listRect, n, selectorIndex,
-            [this](int i) { return importEntries[static_cast<size_t>(i)]; }, nullptr, nullptr, nullptr, false);
+        GUI.drawList(renderer, listRect, n, selectorIndex,
+                     [this](int i) { return importEntries[static_cast<size_t>(i)]; }, nullptr, nullptr, nullptr, false);
       }
       break;
     }
     case Panel::Settings: {
       char buf[80];
-      snprintf(buf, sizeof(buf), "%s: %s", tr(STR_FLASHCARD_SHOW_CONTROLS),
-               showControlsPref ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
+      snprintf(buf, sizeof(buf), "%s: %s", tr(STR_FLASHCARD_SHOW_CONTROLS), showControlsPref ? tr(STR_STATE_ON) : tr(STR_STATE_OFF));
       const std::string settingsLine(buf);
-      GUI.drawList(renderer, listRect, 1, selectorIndex, [&settingsLine](int) { return settingsLine; }, nullptr,
-                   nullptr, nullptr, false);
+      GUI.drawList(renderer, listRect, 1, selectorIndex, [&settingsLine](int) { return settingsLine; }, nullptr, nullptr, nullptr, false);
       break;
     }
   }

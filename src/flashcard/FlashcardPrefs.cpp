@@ -27,7 +27,7 @@ bool loadShowControls(bool& outShowControls) {
 }
 
 bool saveShowControls(bool showControls) {
-  Storage.mkdir("/.crosspoint");
+  Storage.mkdir(kFlashcardStorageDir);
   JsonDocument doc;
   doc["showControls"] = showControls;
   String out;

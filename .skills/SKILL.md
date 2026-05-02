@@ -34,6 +34,18 @@ Xây dựng tính năng Flashcard học từ vựng cho Xteink X4 với tiêu ch
          }
        ]
      }
+   - Import/Database output:
+     - Parse JSON theo kiểu streaming để hỗ trợ file lớn (600+ record)
+     - Tạo file `.bin` riêng cho từng file `.json`
+     - Tên `.bin` được lấy từ tên file `.json`
+     - Nếu đã có `.bin` trùng tên thì ghi đè
+     - Lưu trong thư mục `flashcards/`
+   - Deck hiện đang hoạt động:
+     - Khi vào Deck List, chọn deck nào thì app sẽ set deck đó làm active trước khi vào màn hình học
+     - Mỗi deck `.bin` phải chứa header + offset table + card records để `readCard()` đọc được
+   - Hiện trạng lưu trữ flashcard:
+     - `flashcards/*.bin` là deck database
+     - `flashcards/settings.json` là file setting
    - Database schema:
      - `id INTEGER PRIMARY KEY`
      - `deck_name TEXT`
@@ -68,13 +80,13 @@ Flashcard
 ### 3.2 Deck List
 
 Yêu cầu:
-- Chỉ hiển thị deck từ database
+- Hiển thị tất cả deck `.bin` nằm trong `flashcards/`
 - Không hiển thị:
-  - JSON file
-  - File config
-  - Database khác
+  - file `.json`
+  - `flashcard_settings.json`
+  - file khác không phải deck
 - Hiển thị:
-  - Tên deck (`name`)
+  - Tên deck
   - Số lượng card
 - Hành vi:
   - Chọn deck → vào màn hình học
@@ -86,10 +98,11 @@ Input:
 - Không hiển thị: `flashcard_settings.json`
 
 Hành vi khi chọn file:
-1. XÓA database cũ (nếu có)
-2. Parse JSON
-3. Insert toàn bộ cards
+1. XÓA file `.bin` cũ cùng tên nếu có
+2. Parse JSON bằng stream
+3. Ghi toàn bộ cards vào `.bin`
 4. Lưu `deck_name = name`
+5. Có thể tạo nhiều deck `.bin` độc lập từ nhiều file `.json`
 
 ### 3.4 Settings
 
@@ -99,6 +112,10 @@ Chỉ còn 1 setting:
   - OFF → ẩn toàn bộ:
     - Nút
     - Khung chứa nút
+
+#### Storage
+- Setting được lưu trong `flashcards/settings.json`
+- Deck được lưu trong `flashcards/*.bin`
 
 ## 4. Flashcard Study Screen
 
